@@ -143,50 +143,13 @@ Crooner {
                 voltages[crow_output_ix].add(voltage);
               });
 
-              if ((found_first_frequency == true).and(dup_freqs>5), {
-                // var dupFreqCollection, foundDuplicates, numDuplicatesTarget=50;
-                ////////////////////////
-                // num duplicates target sets how many times a duplicate must be found
-                // before the program decides it has hit the top voltage
-                ////////////////////////
-                // var dupFreqCollection, foundDuplicates, numDuplicatesTarget=(0.02/voltage_incr).round();
-                // ([dup_freqs,confidence > voltage_confidence_level,frequency,prior_freq]).postln;
-
-                // freqs_string = frequencies[crow_output_ix].collect{|v| v.asString }.reduce({|l, r| l ++ "," ++ r });
-                // file = File("~/before_dups.txt".standardizePath,"w");
-                // file.write( freqs_string );
-                // file.close;
-
-                // dupFreqCollection = Array.new(numDuplicatesTarget);
-                // numDuplicatesTarget.do({arg i; dupFreqCollection.add(frequency.round())});
-                // rounded_frequencies_sorted = Array.newFrom(rounded_frequencies[crow_output_ix]);
-                // rounded_frequencies_sorted.sort;
-                // foundDuplicates = rounded_frequencies_sorted.find(dupFreqCollection);
-                // if ((foundDuplicates.isNumber).and(confidence > voltage_confidence_level), {
-                if ((dup_freqs>50).and(confidence > voltage_confidence_level), {
-                  // last_freq_ix = frequencies[crow_output_ix].find([frequency]);
+              if ((found_first_frequency == true).and(dup_freqs>50), {
+                if (confidence > voltage_confidence_level), {
                   last_freq_ix = frequencies[crow_output_ix].size-1;
                   last_detected_pitch = frequency;
 
                   last_detected_pitch_voltage = voltages[crow_output_ix][last_freq_ix];
                   (["set last_detected_pitch_voltage", last_freq_ix,last_detected_pitch_voltage,last_detected_pitch]).postln;
-
-
-                  // //remove excess items from freqs and volts tables
-                  // (["before reduce: ",frequencies[crow_output_ix].size,voltages[crow_output_ix].size,last_freq_ix]).postln;
-                  // frequencies[crow_output_ix].removeAllSuchThat({arg item,i;
-                  //   i>last_freq_ix;
-                  // });
-                  // voltages[crow_output_ix].removeAllSuchThat({arg item,i;
-                  //   i>last_freq_ix;
-                  // });
-                  // (["after reduce: ",frequencies[crow_output_ix].size,voltages[crow_output_ix].size,last_freq_ix]).postln;
-                  
-                  // //save freqs to file
-                  // freqs_string = frequencies[crow_output_ix].collect{|v| v.asString }.reduce({|l, r| l ++ "," ++ r });
-                  // file = File("~/after_dups.txt".standardizePath,"w");
-                  // file.write( freqs_string );
-                  // file.close;
 
                   evaluating=false;
                   (["done evaluating (first/last frequency/voltage)",first_detected_pitch, last_detected_pitch, first_detected_pitch_voltage, last_detected_pitch_voltage]).postln;
@@ -203,7 +166,6 @@ Crooner {
 
                 if(prior_freq.round() == frequency.round(),{
                   dup_freqs=dup_freqs+1;
-                  // (["prior_freq == frequency ", frequency, dup_freqs]).postln;
                 },{
                   dup_freqs=0;
                 });
