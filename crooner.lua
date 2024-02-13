@@ -60,13 +60,18 @@ end
 
 local function round_decimals (value_to_round, num_decimals, rounding_direction)
   local rounded_val
-  local mult = 10^num_decimals
-  if rounding_direction == "up" then
-    rounded_val = math.floor(value_to_round * mult + 0.5) / mult
+  if tonumber(value_to_round)== nil then 
+    print("is string", value_to_round) 
+    return ""
   else
-    rounded_val = math.floor(value_to_round * mult + 0.5) / mult
+    local mult = 10^num_decimals
+    if rounding_direction == "up" then
+      rounded_val = math.floor(tonumber(value_to_round) * mult + 0.5) / mult
+    else
+      rounded_val = math.floor(tonumber(value_to_round) * mult + 0.5) / mult
+    end
+    return rounded_val
   end
-  return rounded_val
 end
 
 
@@ -108,7 +113,24 @@ function init()
     engine.amp(value)
     screen_dirty = true
   end}
+  params:add{type = "number", id = "crow_eval_output", name = "eval output", min=1, max=4, default=1, action=function(value)
+    osc.send( { "localhost", 57120 }, "/sc_crooner/set_crow_output",{value})
+    screen_dirty = true
+  end}
+  voltage_increments={0.01,0.001,0.0001}
+  params:add{type = "option", id = "voltage_increment", name = "voltage increment", options = voltage_increments, default = 2, action = function(value)
+  end}
+
+  params:add{type = "trigger", id = "start_evaluation", name = "start eval"}
+  params:set_action("start_evaluation", function()
+    local msg={params:get("crow_eval_output"),voltage_increments[params:get("voltage_increment")]}
+    osc.send( { "localhost", 57120 }, "/sc_crooner/start_evaluation",msg)
+    print("start eval")
+    screen_dirty = true
+  end)
   
+
+
   params:bang()
   
   -- Polls
@@ -161,7 +183,19 @@ function osc.event(path,args,from)
   -- print("osc event", path,args,from)
   if path == "/lua_crooner/sc_inited" then
     print("sc inited")
-    osc.send( { "localhost", 57120 }, "/sc_crooner/start_metadata_collection")
+    -- osc.send( { "localhost", 57120 }, "/sc_crooner/start_evaluation")
+  elseif path == "/lua_crooner/pitch_evaluation_completed" then
+    local success=tonumber(args[1])
+    local first_pitch=tonumber(args[2])
+    local last_pitch=tonumber(args[3])
+    local first_voltage=tonumber(args[4])
+    local last_voltage=tonumber(args[5])
+    print(success==1 and "sucess" or "fail")
+    if success==1 then
+      print("first_pitch/last_pitch - first_voltage/last_voltage: " ..
+        first_pitch .. "/" .. last_pitch .. " - " ..
+        first_voltage .. "/" ..last_voltage)
+    end
   elseif path == "/lua_crooner/pitch_confidence" then
     -- params:set("x_axis",args[1])
     update_freq(args[1])
@@ -175,12 +209,6 @@ function osc.event(path,args,from)
     test_voltage = volts
     crow.output[output].volts = volts
   end
-end
-
-function tune()
-  -------------------
-  
-  -------------------
 end
 
 function tune_crow(start_voltage)
@@ -238,10 +266,6 @@ function tune_crow(start_voltage)
           voltage_over_times=voltage_over_times+1
           test_voltage=test_voltage+0.0001
           last_test_voltage = test_voltage
-          -- crow.output[1].volts=test_voltage
-          -- last_test_voltage = test_voltage
-          -- print("voltage over", target_freq, current_freq, test_voltage, voltage_over_times)
-          -- print("flucoma", current_fpc_freq, current_fpc_conf)
           clock.sleep(0.01)
         else
           print("couldn't find target voltage, skipping", target_freq, test_voltage, current_freq, found_times)

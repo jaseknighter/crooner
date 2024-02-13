@@ -1,19 +1,26 @@
-// abreviations
-//   fpc = fluidpitchconfidence
-//   meta = metadata
 
 Crooner {
   classvar sender, freq, conf, fluidPitch, s;
-  classvar fpc_first_detected_pitch_voltage,fpc_last_detected_pitch_voltage,fpc_first_detected_pitch, fpc_last_detected_pitch;
-  classvar <starting_voltage= -5, <ending_voltage=5,<sample_rate=1000, <voltage_segment_size=0.01;
-  classvar <fpc_metadata, fpc_meta_num_voltage_segments, fpc_meta_current_voltage,fpc_meta_voltage_collect_incr=0.0001,fpc_meta_voltage_evaluate_incr=0.01, fpc_meta_voltage_evaluate_confidence_level = 0.3, fpc_meta_voltage_evaluate_confidence_hits=0, fpc_meta_sample_rate=1000, fpc_metadata_evaluating=false, fpc_metadata_collecting=false, tuning=false, fpc_metadata_evaluating_freqs, fpc_metadata_evaluating_voltages,
-  fpc_metadata_found_first_frequency=false;
-  classvar fpc_meta_samples_per_volt=10;
+  classvar <starting_voltage= -5, <ending_voltage=5,<sample_rate=100;
+  classvar first_detected_pitch_voltage,last_detected_pitch_voltage,first_detected_pitch, last_detected_pitch;
+  classvar prior_freq=0, dup_freqs=0;
+  classvar current_voltage, voltage_incr=0.001, voltage_confidence_level = 0.3, voltage_confidence_hits=0, evaluating=false, 
+  <frequencies, <rounded_frequencies, <voltages,
+  found_first_frequency=false;
+  classvar samples_per_volt=10;
+  classvar lua_sender;     
+  // classvar sc_sender = NetAddr.new("127.0.0.1",57120); 
+
   
    *dynamicInit {
       if (fluidPitch == nil, {
         fluidPitch = Synth('FluidPitchDetector');
         fluidPitch.set(\crow_output,1);
+        frequencies = Array.newClear(4);
+        rounded_frequencies = Array.newClear(4);
+        voltages = Array.newClear(4);
+        lua_sender = NetAddr.new("127.0.0.1",10111);     
+        lua_sender.sendMsg("/lua_crooner/sc_inited");
         "dynamic init, fluidPitch synth created".postln;
       });
   }
@@ -23,19 +30,26 @@ Crooner {
       s = Server.default;
       OSCFunc.new({ |msg, time, addr, recvPort|
         Routine.new({
-          var lua_sender = NetAddr.new("127.0.0.1",10111);     
-          var sc_sender = NetAddr.new("127.0.0.1",57120); 
           
           SynthDef('FluidPitchDetector', {
             arg crow_output=1;
             var in = SoundIn.ar(0);
             # freq, conf = FluidPitch.kr(in,windowSize:1024);
-            SendReply.kr(Impulse.kr(100), "/sc_crooner/update_freq_conf", [freq, conf]);
-            SendReply.kr(Impulse.kr(100), "/sc_crooner/update_metadata_collect", [crow_output]);
-            SendReply.kr(Impulse.kr(100), "/sc_crooner/update_metadata_evaluate", [crow_output,freq, conf]);
+            SendReply.kr(Impulse.kr(500), "/sc_crooner/update_freq_conf", [freq, conf]);
+            SendReply.kr(Impulse.kr(500), "/sc_crooner/evaluate", [crow_output,freq, conf]);
           }).add;
 
           s.sync;
+
+          //////////////
+          // set crow output from lua
+          //////////////
+          OSCFunc.new({ |msg, time, addr, recvPort|
+            var output = msg[1].asInteger;
+            (["set_crow_output", output]).postln;
+            fluidPitch.set(\crow_output,output);
+            evaluating = false;
+          }, "/sc_crooner/set_crow_output");
 
           //////////////
           // send frequency and confidence data to lua 
@@ -47,160 +61,161 @@ Crooner {
           }, "/sc_crooner/update_freq_conf");
 
           //////////////
-          // meta data collection 
+          // voltage & frequency evaluation 
           //////////////
 
-          //start_metadata_collection
+          //start_evaluation
           OSCFunc.new({ |msg, time, addr, recvPort|
-            fpc_meta_num_voltage_segments = (ending_voltage - starting_voltage) * sample_rate * voltage_segment_size;
-
-            fpc_meta_voltage_collect_incr = 0.001;
-            fpc_meta_sample_rate = 1000;
+            var crow_output_ix;
             starting_voltage= -5;
             ending_voltage=5;
-            fpc_meta_current_voltage = starting_voltage;
-            fpc_first_detected_pitch_voltage = nil;
-            fpc_last_detected_pitch_voltage = nil;
-            fpc_first_detected_pitch = nil;
-            fpc_last_detected_pitch = nil;
-            fpc_metadata_found_first_frequency = false;
-            fpc_metadata_evaluating_freqs=nil;
-            fpc_metadata_evaluating_voltages=nil;
-            fpc_meta_voltage_evaluate_confidence_hits=0;
+            current_voltage = starting_voltage;
+            first_detected_pitch_voltage = nil;
+            last_detected_pitch_voltage = nil;
+            first_detected_pitch = nil;
+            last_detected_pitch = nil;
+            found_first_frequency = false;
+            voltage_confidence_hits=0;
+            dup_freqs=0;
+            prior_freq=0; 
+            if (msg[2]>0,{voltage_incr=msg[2]});
+            switch(msg[1].asInteger,
+              1,{crow_output_ix=0},
+              2,{crow_output_ix=1},
+              3,{crow_output_ix=2},
+              4,{crow_output_ix=3},
+            );            
+            (["crow output set to",crow_output_ix]).postln;
+            (["voltage_incr: ",voltage_incr,msg[2]]).postln;
+            (["array size ",((ending_voltage - starting_voltage)/voltage_incr).round]).postln;
+            frequencies[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
+            rounded_frequencies[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
+            voltages[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
             
-            fpc_metadata_evaluating_freqs=Array.new((ending_voltage - starting_voltage)/fpc_meta_voltage_evaluate_incr);
-            fpc_metadata_evaluating_voltages=Array.new((ending_voltage - starting_voltage)/fpc_meta_voltage_evaluate_incr);
-
-            fpc_metadata = [Dictionary.new(),Dictionary.new(),Dictionary.new(),Dictionary.new()];
-            fpc_metadata.size.do({arg v,i;
-              fpc_meta_samples_per_volt.do({arg v,j;
-                fpc_metadata[i].put("voltage_samples"++((j+1)),[0,1,2,3]);
-                fpc_metadata[i].put("confidence_samples"++((j+1)),[0,1,2,3]);
-              });
-
-
-              // fpc_meta_num_voltage_segments.do({arg v,j;
-              //   fpc_metadata[i].put("voltage_segment_voltage"++((j+1)*voltage_segment_size),[0,1,2,3]);
-              //   fpc_metadata[i].put("voltage_segment_confidence"++((j+1)*voltage_segment_size),[0,1,2,3]);
-              // });
-              
-            });
-
-            fpc_metadata_evaluating = true;
+            evaluating = true;
 
   
-            ("start metadata collection "++fpc_metadata_evaluating).postln;  
-          }, "/sc_crooner/start_metadata_collection");
+            ("start evaluation ").postln;  
+          }, "/sc_crooner/start_evaluation");
 
-          //update_metadata_evaluate
+          //evaluate
           OSCFunc.new({ |msg, time, addr, recvPort|
-            var crow_output, voltage, frequency, confidence;
-            var fpc_metadata_evaluating_freqs_sorted,fpc_metadata_last_freq_ix;
-            var file,sorted_array_string;
-            if (fpc_metadata_evaluating == true, {
-              voltage=fpc_meta_current_voltage;
+            var crow_output, crow_output_ix, voltage, frequency, confidence;
+            var rounded_frequencies_sorted,last_freq_ix;
+            var file,freqs_string;
+            if (evaluating == true, {
+              voltage=current_voltage;
               frequency = msg[4];
               confidence = msg[5];
               switch(msg[3],
-                1.0,{crow_output="1"},
-                2.0,{crow_output="2"},
-                3.0,{crow_output="3"},
-                4.0,{crow_output="4"},
+                1.0,{crow_output="1";crow_output_ix=0},
+                2.0,{crow_output="2";crow_output_ix=1},
+                3.0,{crow_output="3";crow_output_ix=2},
+                4.0,{crow_output="4";crow_output_ix=3},
               );
               lua_sender.sendMsg("/lua_crooner/set_crow_voltage", crow_output, voltage);
               
-              if (confidence > fpc_meta_voltage_evaluate_confidence_level, {
-                if (fpc_first_detected_pitch_voltage.isNil.or( fpc_meta_voltage_evaluate_confidence_hits < 11), {
-                  if (fpc_meta_voltage_evaluate_confidence_hits == 0, {
-                    fpc_first_detected_pitch_voltage = voltage;
-                    fpc_first_detected_pitch = frequency;
-                    (["hit 0: ",fpc_first_detected_pitch_voltage, frequency,confidence]).postln;
+              if (confidence > voltage_confidence_level, {
+                if (first_detected_pitch_voltage.isNil.or
+                (voltage_confidence_hits < 11), {
+                  if (voltage_confidence_hits == 0, {
+                    first_detected_pitch_voltage = voltage;
+                    first_detected_pitch = frequency;
+                    // (["hit 0: ",first_detected_pitch_voltage, frequency,confidence]).postln;
                   });
-                  fpc_meta_voltage_evaluate_confidence_hits = fpc_meta_voltage_evaluate_confidence_hits + 1;
-                  if (fpc_meta_voltage_evaluate_confidence_hits == 10, {
-                    (["found first frequency: ",fpc_first_detected_pitch_voltage, frequency,confidence,voltage]).postln;
-                    fpc_metadata_found_first_frequency = true;
+                  voltage_confidence_hits = voltage_confidence_hits + 1;
+                  if (voltage_confidence_hits == 10, {
+                    (["found first frequency: ",first_detected_pitch_voltage, frequency,confidence,voltage]).postln;
+                    found_first_frequency = true;
                   });
                 });
               },{
-                if ((fpc_meta_voltage_evaluate_confidence_hits > 0),{
-                  "reset".postln;
-                });
-                fpc_meta_voltage_evaluate_confidence_hits = 0;
-                fpc_first_detected_pitch_voltage = nil;
+                // if ((voltage_confidence_hits > 0),{
+                  // "reset".postln;
+                // });
+                voltage_confidence_hits = 0;
+                first_detected_pitch_voltage = nil;
               });
               
-              if (fpc_metadata_found_first_frequency == true, {
-                var dupFreqCollection, foundDuplicates, numDuplicatesTarget=15;
-                fpc_metadata_evaluating_freqs.add(frequency.round);
-                fpc_metadata_evaluating_voltages.add(voltage);
-                dupFreqCollection = Array.new(numDuplicatesTarget);
-                numDuplicatesTarget.do({arg i; dupFreqCollection.add(frequency.round)});
-                fpc_metadata_evaluating_freqs_sorted = Array.newFrom(fpc_metadata_evaluating_freqs);
-                fpc_metadata_evaluating_freqs_sorted.sort;
-                foundDuplicates = fpc_metadata_evaluating_freqs_sorted.find(dupFreqCollection);
-                if ((foundDuplicates.isNumber).and(confidence > fpc_meta_voltage_evaluate_confidence_level), {
-                  fpc_metadata_last_freq_ix = fpc_metadata_evaluating_freqs.find([frequency.round]);
-                  fpc_last_detected_pitch = frequency;
-                  fpc_last_detected_pitch_voltage = fpc_metadata_evaluating_voltages[fpc_metadata_last_freq_ix];
-
-                  (["done evaluating (first/last frequency/voltage)",fpc_first_detected_pitch, fpc_last_detected_pitch, fpc_first_detected_pitch_voltage, fpc_last_detected_pitch_voltage]).postln;
-                  fpc_metadata_evaluating=false;
-                  // fpc_metadata_collecting = true;
-                  lua_sender.sendMsg("/lua_crooner/set_crow_voltage", crow_output, fpc_last_detected_pitch_voltage);
-
-                });
-
+              if ((found_first_frequency == true).and(frequency.round(0.01) > prior_freq.round(0.01)), {
+                frequencies[crow_output_ix].add(frequency);
+                rounded_frequencies[crow_output_ix].add(frequency.round());
+                voltages[crow_output_ix].add(voltage);
               });
 
-              if (fpc_meta_current_voltage>5, {
-                fpc_metadata_evaluating=false;
-                // fpc_metadata_collecting = true;
+              if ((found_first_frequency == true).and(dup_freqs>5), {
+                // var dupFreqCollection, foundDuplicates, numDuplicatesTarget=50;
+                ////////////////////////
+                // num duplicates target sets how many times a duplicate must be found
+                // before the program decides it has hit the top voltage
+                ////////////////////////
+                // var dupFreqCollection, foundDuplicates, numDuplicatesTarget=(0.02/voltage_incr).round();
+                // ([dup_freqs,confidence > voltage_confidence_level,frequency,prior_freq]).postln;
 
+                // freqs_string = frequencies[crow_output_ix].collect{|v| v.asString }.reduce({|l, r| l ++ "," ++ r });
+                // file = File("~/before_dups.txt".standardizePath,"w");
+                // file.write( freqs_string );
+                // file.close;
+
+                // dupFreqCollection = Array.new(numDuplicatesTarget);
+                // numDuplicatesTarget.do({arg i; dupFreqCollection.add(frequency.round())});
+                // rounded_frequencies_sorted = Array.newFrom(rounded_frequencies[crow_output_ix]);
+                // rounded_frequencies_sorted.sort;
+                // foundDuplicates = rounded_frequencies_sorted.find(dupFreqCollection);
+                // if ((foundDuplicates.isNumber).and(confidence > voltage_confidence_level), {
+                if ((dup_freqs>50).and(confidence > voltage_confidence_level), {
+                  // last_freq_ix = frequencies[crow_output_ix].find([frequency]);
+                  last_freq_ix = frequencies[crow_output_ix].size-1;
+                  last_detected_pitch = frequency;
+
+                  last_detected_pitch_voltage = voltages[crow_output_ix][last_freq_ix];
+                  (["set last_detected_pitch_voltage", last_freq_ix,last_detected_pitch_voltage,last_detected_pitch]).postln;
+
+
+                  // //remove excess items from freqs and volts tables
+                  // (["before reduce: ",frequencies[crow_output_ix].size,voltages[crow_output_ix].size,last_freq_ix]).postln;
+                  // frequencies[crow_output_ix].removeAllSuchThat({arg item,i;
+                  //   i>last_freq_ix;
+                  // });
+                  // voltages[crow_output_ix].removeAllSuchThat({arg item,i;
+                  //   i>last_freq_ix;
+                  // });
+                  // (["after reduce: ",frequencies[crow_output_ix].size,voltages[crow_output_ix].size,last_freq_ix]).postln;
+                  
+                  // //save freqs to file
+                  // freqs_string = frequencies[crow_output_ix].collect{|v| v.asString }.reduce({|l, r| l ++ "," ++ r });
+                  // file = File("~/after_dups.txt".standardizePath,"w");
+                  // file.write( freqs_string );
+                  // file.close;
+
+                  evaluating=false;
+                  (["done evaluating (first/last frequency/voltage)",first_detected_pitch, last_detected_pitch, first_detected_pitch_voltage, last_detected_pitch_voltage]).postln;
+                  lua_sender.sendMsg("/lua_crooner/set_crow_voltage", crow_output, last_detected_pitch_voltage);
+                  lua_sender.sendMsg("/lua_crooner/pitch_evaluation_completed", 1, first_detected_pitch, last_detected_pitch, first_detected_pitch_voltage, last_detected_pitch_voltage);
+
+                });
+              });
+
+              if (current_voltage>5, {
+                evaluating=false;
+                lua_sender.sendMsg("/lua_crooner/pitch_evaluation_completed", 0);
               },{
-                fpc_meta_current_voltage = fpc_meta_current_voltage + fpc_meta_voltage_evaluate_incr;
+
+                if(prior_freq.round() == frequency.round(),{
+                  dup_freqs=dup_freqs+1;
+                  // (["prior_freq == frequency ", frequency, dup_freqs]).postln;
+                },{
+                  dup_freqs=0;
+                });
+                prior_freq = frequency;
+                current_voltage = current_voltage + voltage_incr;
               });
               
             });
-          }, "/sc_crooner/update_metadata_evaluate");
+          }, "/sc_crooner/evaluate");
 
-          //update_metadata_collection
-          OSCFunc.new({ |msg, time, addr, recvPort|
-            var crow_output, voltage, confidence;
-            if (fpc_metadata_collecting == true, {
-              voltage=fpc_meta_current_voltage;
-              switch(msg[3],
-                1.0,{crow_output="1"},
-                2.0,{crow_output="2"},
-                3.0,{crow_output="3"},
-                4.0,{crow_output="4"},
-              );
-              //  ("update_metadata_collection " ++ fpc_metadata.size ++ "/" ++ fpc_meta_num_voltage_segments ++ "/" ++ fpc_meta_current_voltage).postln;
-              lua_sender.sendMsg("/lua_crooner/set_crow_voltage", crow_output, voltage);
-              fpc_meta_current_voltage = fpc_meta_current_voltage + fpc_meta_voltage_collect_incr;
-              // fpc_meta_current_voltage.postln;
-            });
-          }, "/sc_crooner/update_metadata_collect");
-
-
-
-          //////////////
-          // tuner 
-          //////////////
-
-          OSCFunc.new({ |msg, time, addr, recvPort|
-            "start pitch test".postln;  
-            tuning=true;
-          }, "/sc_crooner/start_tuner");
-
-          OSCFunc.new({ |msg, time, addr, recvPort|
-            "stop pitch test".postln;  
-            tuning=false;
-          }, "/sc_crooner/stop_tuner");
 
           Crooner.dynamicInit();
-          lua_sender.sendMsg("/lua_crooner/sc_inited");
-
         }).play
       }, "/sc_crooner/init");
 
