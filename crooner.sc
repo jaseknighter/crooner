@@ -4,7 +4,7 @@ Crooner {
   classvar <starting_voltage= -5, <ending_voltage=5,<sample_rate=100;
   classvar first_detected_pitch_voltage,last_detected_pitch_voltage,first_detected_pitch, last_detected_pitch;
   classvar prior_freq=0, dup_freqs=0;
-  classvar current_voltage, voltage_incr=0.001, voltage_confidence_level = 0.3, voltage_confidence_hits=0, evaluating=false, 
+  classvar current_voltage, voltage_incr=0.001, voltage_confidence_level = 0.20, voltage_confidence_hits=0, evaluating=false, 
   <frequencies, <rounded_frequencies, <voltages,
   found_first_frequency=false;
   classvar samples_per_volt=10;
@@ -35,11 +35,36 @@ Crooner {
             arg crow_output=1;
             var in = SoundIn.ar(0);
             # freq, conf = FluidPitch.kr(in,windowSize:1024);
-            SendReply.kr(Impulse.kr(500), "/sc_crooner/update_freq_conf", [freq, conf]);
-            SendReply.kr(Impulse.kr(500), "/sc_crooner/evaluate", [crow_output,freq, conf]);
+            SendReply.kr(Impulse.kr(100), "/sc_crooner/update_freq_conf", [freq, conf]);
+            SendReply.kr(Impulse.kr(100), "/sc_crooner/evaluate", [crow_output,freq, conf]);
           }).add;
 
           s.sync;
+
+
+          //////////////
+          //find closest frequency
+          //////////////
+          OSCFunc.new({ |msg, time, addr, recvPort|
+            var closest_frequency, closest_voltage, prior_closest,ix,
+            target_frequency,crow_output_ix;
+
+            target_frequency=msg[1].asInteger;
+            switch(msg[2].asInteger,
+              1,{crow_output_ix=0},
+              2,{crow_output_ix=1},
+              3,{crow_output_ix=2},
+              4,{crow_output_ix=3},
+            );            
+
+            (["find closest freq/voltage",target_frequency]).postln;
+            (["target_frequency, frequencies[i] ",target_frequency, frequencies[crow_output_ix][0],frequencies[crow_output_ix][1],frequencies]).postln;
+            ix = frequencies[crow_output_ix].indexIn(target_frequency);
+            closest_frequency = frequencies[crow_output_ix][ix];
+            closest_voltage = voltages[crow_output_ix][ix];
+            prior_closest = voltages[crow_output_ix][ix-1];
+            lua_sender.sendMsg("/lua_crooner/closest_frequency", closest_frequency, closest_voltage, prior_closest, ix);
+          }, "/sc_crooner/find_closest_frequency");
 
           //////////////
           // set crow output from lua
@@ -91,10 +116,7 @@ Crooner {
             frequencies[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
             rounded_frequencies[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
             voltages[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
-            
             evaluating = true;
-
-  
             ("start evaluation ").postln;  
           }, "/sc_crooner/start_evaluation");
 
@@ -102,7 +124,7 @@ Crooner {
           OSCFunc.new({ |msg, time, addr, recvPort|
             var crow_output, crow_output_ix, voltage, frequency, confidence;
             var rounded_frequencies_sorted,last_freq_ix;
-            var file,freqs_string;
+            var freqs_file,volts_file,freqs_string,volts_string;
             if (evaluating == true, {
               voltage=current_voltage;
               frequency = msg[4];
@@ -117,34 +139,52 @@ Crooner {
               
               if (confidence > voltage_confidence_level, {
                 if (first_detected_pitch_voltage.isNil.or
-                (voltage_confidence_hits < 11), {
+                (voltage_confidence_hits < 12), {
+                  if ((voltage_confidence_hits > 10).and(frequency.round(0.01) >= prior_freq.round(0.01)), {
+                    (["found first frequency: ",first_detected_pitch_voltage, first_detected_pitch,confidence]).postln;
+                    // (["frequency.round(0.01) > prior_freq.round(0.01)",frequency.round(0.01) , prior_freq.round(0.01)]).postln;
+                    found_first_frequency = true;
+                  });
                   if (voltage_confidence_hits == 0, {
                     first_detected_pitch_voltage = voltage;
                     first_detected_pitch = frequency;
                     // (["hit 0: ",first_detected_pitch_voltage, frequency,confidence]).postln;
                   });
                   voltage_confidence_hits = voltage_confidence_hits + 1;
-                  if (voltage_confidence_hits == 10, {
-                    (["found first frequency: ",first_detected_pitch_voltage, frequency,confidence,voltage]).postln;
-                    found_first_frequency = true;
-                  });
                 });
               },{
-                // if ((voltage_confidence_hits > 0),{
+                if ((voltage_confidence_hits > 0),{
                   // "reset".postln;
-                // });
+                  frequencies[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
+                  rounded_frequencies[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
+                  voltages[crow_output_ix]=Array.new(((ending_voltage - starting_voltage)/voltage_incr).round);
+            
+                });
                 voltage_confidence_hits = 0;
                 first_detected_pitch_voltage = nil;
               });
               
-              if ((found_first_frequency == true).and(frequency.round(0.01) > prior_freq.round(0.01)), {
-                frequencies[crow_output_ix].add(frequency);
-                rounded_frequencies[crow_output_ix].add(frequency.round());
-                voltages[crow_output_ix].add(voltage);
+              if (confidence > voltage_confidence_level, {
+                if ((found_first_frequency == true).and(frequency.round(0.01) > prior_freq.round(0.01)), {
+                  if ((frequency.round(0.01) > prior_freq.round(0.01)), {
+                    frequencies[crow_output_ix].add(frequency);
+                    rounded_frequencies[crow_output_ix].add(frequency.round());
+                    voltages[crow_output_ix].add(voltage);
+                  });
+                });
               });
 
               if ((found_first_frequency == true).and(dup_freqs>50), {
-                if (confidence > voltage_confidence_level), {
+                if (confidence > voltage_confidence_level, {
+                  // freqs_string = frequencies[crow_output_ix].collect{|v| v.asString }.reduce({|l, r| l ++ "," ++ r });
+                  // freqs_file = File("/we/dust/data/crooner/frequencies.txt".standardizePath,"w");
+                  // freqs_file.write( freqs_string );
+                  // freqs_file.close;
+                  // volts_string = voltages[crow_output_ix].collect{|v| v.asString }.reduce({|l, r| l ++ "," ++ r });
+                  // volts_file = File("/we/dust/data/crooner/voltages.txt".standardizePath,"w");
+                  // volts_file.write( volts_string );
+                  // volts_file.close;
+
                   last_freq_ix = frequencies[crow_output_ix].size-1;
                   last_detected_pitch = frequency;
 
@@ -152,10 +192,9 @@ Crooner {
                   (["set last_detected_pitch_voltage", last_freq_ix,last_detected_pitch_voltage,last_detected_pitch]).postln;
 
                   evaluating=false;
-                  (["done evaluating (first/last frequency/voltage)",first_detected_pitch, last_detected_pitch, first_detected_pitch_voltage, last_detected_pitch_voltage]).postln;
+                  (["done evaluating (first/last frequency/voltage)",first_detected_pitch, last_detected_pitch, first_detected_pitch_voltage, last_detected_pitch_voltage,frequencies.size,voltages.size]).postln;
                   lua_sender.sendMsg("/lua_crooner/set_crow_voltage", crow_output, last_detected_pitch_voltage);
                   lua_sender.sendMsg("/lua_crooner/pitch_evaluation_completed", 1, first_detected_pitch, last_detected_pitch, first_detected_pitch_voltage, last_detected_pitch_voltage);
-
                 });
               });
 

@@ -1,3 +1,4 @@
+-- osc.send( { "localhost", 57120 }, "/sc_crooner/find_closest_frequency",{400,1})
 -- crooner
 -- 0.1 @jaseknighter
 -- llllllll.co/t/<insert link>
@@ -19,6 +20,12 @@ engine.name = "TestSine"
 local REFRESH_RATE = 15
 local TUNE_RATE = 100
 local screen_dirty = true
+
+local first_pitch = -1
+local last_pitch = -1
+local first_voltage = nil
+local last_voltage = nil
+
 
 local current_freq = -1
 local current_fpc_freq = -1
@@ -86,7 +93,7 @@ end
 
 function init()
   print("init sc")
-  osc.send( { "localhost", 57120 }, "/sc_crooner/init")
+  osc.send( { "localhost", 57120 }, "/sc_crooner/init",{0.80})
   -- osc.send( { "localhost", 57120 }, "/sc_crooner/get_freq_conf")
   --crow.clear()
   engine.amp(0)
@@ -123,6 +130,10 @@ function init()
 
   params:add{type = "trigger", id = "start_evaluation", name = "start eval"}
   params:set_action("start_evaluation", function()
+    first_pitch = -1
+    last_pitch = -1
+    first_voltage = nil
+    last_voltage = nil
     local msg={params:get("crow_eval_output"),voltage_increments[params:get("voltage_increment")]}
     osc.send( { "localhost", 57120 }, "/sc_crooner/start_evaluation",msg)
     print("start eval")
@@ -186,10 +197,10 @@ function osc.event(path,args,from)
     -- osc.send( { "localhost", 57120 }, "/sc_crooner/start_evaluation")
   elseif path == "/lua_crooner/pitch_evaluation_completed" then
     local success=tonumber(args[1])
-    local first_pitch=tonumber(args[2])
-    local last_pitch=tonumber(args[3])
-    local first_voltage=tonumber(args[4])
-    local last_voltage=tonumber(args[5])
+    first_pitch=tonumber(args[2])
+    last_pitch=tonumber(args[3])
+    first_voltage=tonumber(args[4])
+    last_voltage=tonumber(args[5])
     print(success==1 and "sucess" or "fail")
     if success==1 then
       print("first_pitch/last_pitch - first_voltage/last_voltage: " ..
@@ -208,9 +219,16 @@ function osc.event(path,args,from)
     local volts = args[2]
     test_voltage = volts
     crow.output[output].volts = volts
+  elseif path == "/lua_crooner/closest_frequency" then
+    local closest_frequency = tonumber(args[1])
+    local closest_voltage = tonumber(args[2])
+    local prior_closest = tonumber(args[3])
+    local index = tonumber(args[4])
+    print("found closest freq/volt", closest_frequency, closest_voltage,prior_closest,index)
   end
 end
 
+--[[
 function tune_crow(start_voltage)
   crow.clear()
   start_tuner()
@@ -295,6 +313,7 @@ function tune_crow(start_voltage)
     end
   end
 end
+]]
 
 function redraw()
   screen.clear()
@@ -335,10 +354,20 @@ function redraw()
   
   -- Draw text
   
-  screen.move(64, 19)
   if current_freq > 0 then screen.level(15)
   else screen.level(3) end
   
+
+
+  if first_pitch and last_pitch then
+    screen.move(32, 10)
+    screen.text_center(MusicUtil.note_num_to_name(MusicUtil.freq_to_note_num(math.floor(first_pitch)), true) .. " " .. MusicUtil.freq_to_note_num(math.floor(first_pitch)))
+  
+    screen.move(64+32, 10)
+    screen.text_center(MusicUtil.note_num_to_name(MusicUtil.freq_to_note_num(math.floor(last_pitch)), true) .. " " ..MusicUtil.freq_to_note_num(math.floor(last_pitch))) 
+  end
+  
+  screen.move(64, 19)
   if last_freq > 0 then
     screen.text_center(MusicUtil.note_num_to_name(note_num, true) .. " " ..note_num)
   end
